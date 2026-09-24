@@ -4,10 +4,10 @@ Impeller is the compiler and runtime for graph-based zero-knowledge proof comput
 
 ## Papers
 
-- **Impeller: Scalable and Efficient Zero-Knowledge Proof Computation Framework via Graph Compilation.** Liukun Yu<sup>*</sup>, Xinwei Qiang<sup>*</sup>, Shixuan Sun, Chen Chen, Jingwen Leng, and Jin Dong. ASPLOS 2027. This repository contains the core compiler, runtime, and GPU code for the paper. See the [author's publication listing](https://tie-pilot-qxw.github.io/) while the proceedings link is pending.
-- **[FluxZK: Scalable and Efficient Zero-Knowledge Proof Computation via GPU Acceleration](https://sc26.conference-program.com/presentation/?id=pap593&sess=sess231).** Xinwei Qiang<sup>*</sup>, Liukun Yu<sup>*</sup>, Xiyu Wang, Zhengyi Li, Shixuan Sun, Jingwen Leng, Chen Chen, Jiaping Gui, Zhenzhe Zheng, Jin Dong, and Minyi Guo. SC 2026. Several Impeller GPU kernels are adapted from the [FluxZK repository](https://github.com/SJTU-Liquid/FluxZK); see [third-party notices](THIRD_PARTY_NOTICES.md).
+- **Impeller: Scalable and Efficient Zero-Knowledge Proof Computation Framework via Graph Compilation.** Liukun Yu\*, Xinwei Qiang\*, Shixuan Sun, Chen Chen, Jingwen Leng, and Jin Dong. ASPLOS 2027. This repository contains the core compiler, runtime, and GPU code for the paper. See the [author's publication listing](https://tie-pilot-qxw.github.io/) while the proceedings link is pending.
+- **[FluxZK: Scalable and Efficient Zero-Knowledge Proof Computation via GPU Acceleration](https://sc26.conference-program.com/presentation/?id=pap593&sess=sess231).** Xinwei Qiang\*, Liukun Yu\*, Xiyu Wang, Zhengyi Li, Shixuan Sun, Jingwen Leng, Chen Chen, Jiaping Gui, Zhenzhe Zheng, Jin Dong, and Minyi Guo. SC 2026. Several Impeller GPU kernels are adapted from the [FluxZK repository](https://github.com/SJTU-Liquid/FluxZK); see [third-party notices](THIRD_PARTY_NOTICES.md).
 
-<sup>*</sup> Equal contribution.
+\* Equal contribution.
 
 The companion [Halo2 integration](https://github.com/SJTU-Liquid/halo2) and [zkEVM evaluation circuits](https://github.com/SJTU-Liquid/zkevm-circuits) reproduce the paper's proving workloads. They are separate repositories because the latter also depends on a pinned `snark-verifier` and `halo2-lib` pair.
 
