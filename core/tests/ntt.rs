@@ -1,0 +1,441 @@
+mod common;
+use std::sync::Arc;
+
+use common::*;
+
+static SSIP_MAX_K: u32 = 29;
+static RECM_MAX_K: u32 = 30;
+
+use group::ff::Field;
+use halo2_proofs::arithmetic;
+use halo2_proofs::poly::EvaluationDomain;
+use halo2curves::ff::WithSmallOrderMulGroup;
+use rand_core::OsRng;
+use rand_core::SeedableRng;
+use rand_xorshift::XorShiftRng;
+use zkpoly_common::devices::DeviceType;
+use zkpoly_common::load_dynamic::Libs;
+use zkpoly_common::typ::PolySlice;
+use zkpoly_core::ntt::*;
+use zkpoly_cuda_api::stream::CudaEventRaw;
+use zkpoly_cuda_api::stream::CudaStream;
+use zkpoly_memory_pool::CpuMemoryPool;
+use zkpoly_runtime::args::Variable;
+use zkpoly_runtime::functions::*;
+use zkpoly_runtime::runtime::transfer::Transfer;
+use zkpoly_runtime::scalar::ScalarArray;
+
+fn random_data(k: u32) -> Vec<MyField> {
+    if k <= 20 {
+        (0..(1 << k))
+            .into_iter()
+            .map(|_| MyField::random(XorShiftRng::from_rng(OsRng).unwrap()))
+            .collect()
+    } else {
+        let data = random_data(k - 1);
+        data.iter().chain(data.iter()).cloned().collect()
+    }
+}
+
+fn run_ssip_ntt(k_values: impl IntoIterator<Item = u32>) {
+    let mut libs = Libs::new();
+    let ntt = SsipNtt::<MyRuntimeType>::new(&mut libs);
+    let precompute = SsipPrecompute::<MyRuntimeType>::new(&mut libs);
+    let ntt_fn = match ntt.get_fn() {
+        Function { f: func, .. } => func,
+    };
+
+    let precompute_fn = precompute.get_fn();
+    let mut cpu_alloc = CpuMemoryPool::new(SSIP_MAX_K, size_of::<MyField>());
+    let stream = Variable::<MyRuntimeType>::Stream(CudaStream::new(0));
+
+    for k in k_values {
+        println!("generating data for k = {k}...");
+        let mut data_rust: Vec<_> = random_data(k);
+
+        let mut poly_cpu =
+            ScalarArray::<MyField>::new(1 << k, cpu_alloc.allocate(1 << k), DeviceType::CPU);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(data_rust.as_ptr(), poly_cpu.values, 1 << k);
+        }
+
+        let omega = MyField::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
+
+        println!("testing on cpu for k = {k}...");
+
+        let start = std::time::Instant::now();
+        arithmetic::best_fft(&mut data_rust, omega, k as u32);
+        let end = std::time::Instant::now();
+
+        println!("cpu time for k = {k}: {:?}", end - start);
+
+        println!("precomputing twiddle factors for k = {k}...");
+
+        let mut twiddle = ScalarArray::<MyField>::new(
+            1 << (k - 1),
+            cpu_alloc.allocate(1 << (k - 1)),
+            DeviceType::CPU,
+        );
+        precompute_fn(&mut twiddle, &omega).unwrap();
+
+        println!("testing on gpu for k = {k}...");
+
+        let start = std::time::Instant::now();
+
+        let ptr_data: *mut MyField = stream.unwrap_stream().allocate(1 << (k + 1));
+        let ptr_twiddle: *mut MyField = stream.unwrap_stream().allocate(1 << (k - 1));
+
+        let mut poly_gpu: Variable<MyRuntimeType> = Variable::ScalarArray(
+            ScalarArray::<MyField>::new(1 << (k + 1), ptr_data, DeviceType::GPU { device_id: 0 }),
+        );
+        poly_gpu.unwrap_scalar_array_mut().rotate(3);
+        let mut poly_gpu_slice = Variable::ScalarArray(
+            poly_gpu
+                .unwrap_scalar_array_mut()
+                .slice(1 << k, 1 << (k + 1)),
+        );
+        let mut twiddle_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            1 << (k - 1),
+            ptr_twiddle,
+            DeviceType::GPU { device_id: 0 },
+        ));
+
+        poly_cpu.cpu2gpu(
+            poly_gpu_slice.unwrap_scalar_array_mut(),
+            stream.unwrap_stream(),
+        );
+        twiddle.cpu2gpu(
+            twiddle_gpu.unwrap_scalar_array_mut(),
+            stream.unwrap_stream(),
+        );
+
+        let event_start = CudaEventRaw::new(0);
+        let event_end = CudaEventRaw::new(0);
+
+        event_start.record(stream.unwrap_stream());
+
+        ntt_fn(
+            vec![&mut poly_gpu_slice],
+            vec![&twiddle_gpu, &stream],
+            Arc::new(|x| x),
+            None,
+        )
+        .unwrap();
+
+        event_end.record(stream.unwrap_stream());
+
+        poly_gpu_slice
+            .unwrap_scalar_array()
+            .gpu2cpu(&mut poly_cpu, stream.unwrap_stream());
+
+        let end1 = std::time::Instant::now();
+
+        stream.unwrap_stream().sync();
+
+        let time = event_start.elapsed(&event_end);
+
+        println!("gpu time for k = {k}: {:?} ms", time);
+
+        let end2 = std::time::Instant::now();
+        let _dur1 = end1 - start;
+        let _dur2 = end2 - start;
+
+        stream.unwrap_stream().free(ptr_data);
+        stream.unwrap_stream().free(ptr_twiddle);
+
+        println!("comparing results for k = {k}...");
+
+        let data_cuda = unsafe { std::slice::from_raw_parts(poly_cpu.values, 1 << k) };
+
+        data_cuda.iter().zip(data_rust.iter()).for_each(|(a, b)| {
+            assert_eq!(a, b);
+        });
+
+        cpu_alloc.free(poly_cpu.values);
+        cpu_alloc.free(twiddle.values);
+    }
+}
+
+#[test]
+fn test_ssip_ntt() {
+    run_ssip_ntt((20..=SSIP_MAX_K).step_by(2));
+}
+
+#[test]
+fn test_ssip_ntt_k21() {
+    run_ssip_ntt([21]);
+}
+
+#[test]
+fn test_recompute_ntt() {
+    let mut libs = Libs::new();
+    let ntt = RecomputeNtt::<MyRuntimeType>::new(&mut libs);
+    let precompute = GenPqOmegas::<MyRuntimeType>::new(&mut libs);
+    let ntt_fn = match ntt.get_fn() {
+        Function { f: func, .. } => func,
+    };
+
+    let precompute_fn = precompute.get_fn();
+    let mut cpu_alloc = CpuMemoryPool::new(RECM_MAX_K, size_of::<MyField>());
+    let stream = Variable::<MyRuntimeType>::Stream(CudaStream::new(0));
+
+    for k in (20..=RECM_MAX_K).step_by(2) {
+        println!("generating data for k = {k}...");
+        let mut data_rust: Vec<_> = random_data(k);
+
+        let mut poly_cpu =
+            ScalarArray::<MyField>::new(1 << k, cpu_alloc.allocate(1 << k), DeviceType::CPU);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(data_rust.as_ptr(), poly_cpu.values, 1 << k);
+        }
+
+        let omega = MyField::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
+
+        if k < 30 {
+            println!("testing on cpu for k = {k}...");
+            let start = std::time::Instant::now();
+            arithmetic::best_fft(&mut data_rust, omega, k as u32);
+            let end = std::time::Instant::now();
+            println!("cpu time for k = {k}: {:?}", end - start);
+        }
+
+        println!("precomputing twiddle factors for k = {k}...");
+
+        let mut pq = ScalarArray::<MyField>::new(
+            precompute.get_pq_len(k),
+            cpu_alloc.allocate(precompute.get_pq_len(k)),
+            DeviceType::CPU,
+        );
+        let mut omegas = ScalarArray::<MyField>::new(32, cpu_alloc.allocate(32), DeviceType::CPU);
+        precompute_fn(&mut pq, &mut omegas, 1 << k, &omega).unwrap();
+
+        println!("transferring data to gpu for k = {k}...");
+
+        let ptr_data: *mut MyField = stream.unwrap_stream().allocate(1 << k);
+        let ptr_pq: *mut MyField = stream.unwrap_stream().allocate(precompute.get_pq_len(k));
+        let ptr_omegas: *mut MyField = stream.unwrap_stream().allocate(32);
+
+        let mut poly_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            1 << k,
+            ptr_data,
+            DeviceType::GPU { device_id: 0 },
+        ));
+        poly_gpu.unwrap_scalar_array_mut().rotate(-2);
+        let mut pq_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            precompute.get_pq_len(k),
+            ptr_pq,
+            DeviceType::GPU { device_id: 0 },
+        ));
+        let mut omegas_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            32,
+            ptr_omegas,
+            DeviceType::GPU { device_id: 0 },
+        ));
+
+        println!("testing on gpu for k = {k}...");
+
+        let event_start = CudaEventRaw::new(0);
+        let event_end = CudaEventRaw::new(0);
+
+        poly_cpu.cpu2gpu(poly_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+        pq.cpu2gpu(pq_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+        omegas.cpu2gpu(omegas_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+
+        event_start.record(stream.unwrap_stream());
+        ntt_fn(
+            vec![&mut poly_gpu],
+            vec![&pq_gpu, &omegas_gpu, &stream],
+            Arc::new(|x| x),
+            None,
+        )
+        .unwrap();
+        event_end.record(stream.unwrap_stream());
+
+        poly_gpu
+            .unwrap_scalar_array()
+            .gpu2cpu(&mut poly_cpu, stream.unwrap_stream());
+
+        stream.unwrap_stream().free(ptr_data);
+        stream.unwrap_stream().free(ptr_pq);
+        stream.unwrap_stream().free(ptr_omegas);
+        stream.unwrap_stream().sync();
+
+        println!(
+            "gpu time for k = {k}: {:?} ms",
+            event_start.elapsed(&event_end)
+        );
+
+        if k < 30 {
+            println!("comparing results for k = {k}...");
+
+            let data_cuda = unsafe { std::slice::from_raw_parts(poly_cpu.values, 1 << k) };
+
+            data_cuda.iter().zip(data_rust.iter()).for_each(|(a, b)| {
+                assert_eq!(a, b);
+            });
+        }
+        cpu_alloc.free(poly_cpu.values);
+        cpu_alloc.free(pq.values);
+        cpu_alloc.free(omegas.values);
+    }
+}
+
+#[test]
+fn test_distribute_zeta() {
+    let mut libs = Libs::new();
+    let ntt = RecomputeNtt::<MyRuntimeType>::new(&mut libs);
+    let precompute = GenPqOmegas::<MyRuntimeType>::new(&mut libs);
+    let distribute = DistributePowers::<MyRuntimeType>::new(&mut libs);
+    let ntt_fn = match ntt.get_fn() {
+        Function { f: func, .. } => func,
+    };
+    let zeta_fn = match distribute.get_fn() {
+        Function { f: func, .. } => func,
+    };
+
+    let precompute_fn = precompute.get_fn();
+    let mut cpu_alloc = CpuMemoryPool::new(SSIP_MAX_K + 2, size_of::<MyField>());
+    let stream = Variable::<MyRuntimeType>::Stream(CudaStream::new(0));
+
+    for k in 10..=SSIP_MAX_K {
+        println!("generating data for k = {k}...");
+        let data_rust: Vec<_> = (0..(1 << k))
+            .into_iter()
+            .map(|_| MyField::random(XorShiftRng::from_rng(OsRng).unwrap()))
+            .collect();
+
+        let domain = EvaluationDomain::<MyField>::new(4, k);
+
+        let extended_k = domain.extended_k();
+
+        let mut poly_cpu = ScalarArray::<MyField>::new(
+            1 << extended_k,
+            cpu_alloc.allocate(1 << extended_k),
+            DeviceType::CPU,
+        );
+
+        for i in 0..(1 << k) {
+            poly_cpu[i] = data_rust[i];
+        }
+        for i in (1 << k)..(1 << extended_k) {
+            poly_cpu[i] = MyField::zero();
+        }
+
+        let poly_rust = domain.coeff_from_vec(data_rust);
+
+        let g_coset = MyField::ZETA;
+        let g_coset_inv = g_coset.square();
+        let omega = domain.get_extended_omega();
+
+        // compute on cpu
+        let poly_rust = domain.coeff_to_extended(poly_rust);
+
+        let mut zeta_cpu = ScalarArray::<MyField>::new(3, cpu_alloc.allocate(3), DeviceType::CPU);
+        zeta_cpu[0] = Field::ONE;
+        zeta_cpu[1] = g_coset;
+        zeta_cpu[2] = g_coset_inv;
+
+        let mut pq = ScalarArray::<MyField>::new(
+            precompute.get_pq_len(extended_k),
+            cpu_alloc.allocate(precompute.get_pq_len(extended_k)),
+            DeviceType::CPU,
+        );
+        let mut omegas = ScalarArray::<MyField>::new(32, cpu_alloc.allocate(32), DeviceType::CPU);
+        precompute_fn(&mut pq, &mut omegas, 1 << extended_k, &omega).unwrap();
+
+        println!("transferring data to gpu for k = {k}...");
+
+        let ptr_data: *mut MyField = stream.unwrap_stream().allocate(1 << extended_k);
+        let ptr_pq: *mut MyField = stream
+            .unwrap_stream()
+            .allocate(precompute.get_pq_len(extended_k));
+        let ptr_omegas: *mut MyField = stream.unwrap_stream().allocate(32);
+        let ptr_zeta: *mut MyField = stream.unwrap_stream().allocate(3);
+
+        let mut poly_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            1 << extended_k,
+            ptr_data,
+            DeviceType::GPU { device_id: 0 },
+        ));
+
+        poly_gpu.unwrap_scalar_array_mut().rotate(-2);
+        let mut pq_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            precompute.get_pq_len(extended_k),
+            ptr_pq,
+            DeviceType::GPU { device_id: 0 },
+        ));
+        let mut omegas_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            32,
+            ptr_omegas,
+            DeviceType::GPU { device_id: 0 },
+        ));
+        let mut zeta_gpu = Variable::ScalarArray(ScalarArray::<MyField>::new(
+            3,
+            ptr_zeta,
+            DeviceType::GPU { device_id: 0 },
+        ));
+
+        println!("testing on gpu for k = {k}...");
+
+        poly_cpu.cpu2gpu(poly_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+        pq.cpu2gpu(pq_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+        omegas.cpu2gpu(omegas_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+        zeta_cpu.cpu2gpu(zeta_gpu.unwrap_scalar_array_mut(), stream.unwrap_stream());
+
+        // test chunked distribute powers zeta
+        let len = poly_gpu.unwrap_scalar_array().len();
+        let chunks = 4;
+        assert!(len % chunks == 0);
+        let chunk_size = len / chunks;
+        for i in 0..chunks {
+            let mut slice_poly_d: Variable<MyRuntimeType> = Variable::ScalarArray(
+                poly_gpu
+                    .unwrap_scalar_array()
+                    .slice(i * chunk_size, (i + 1) * chunk_size),
+            );
+            let slice_info = PolySlice {
+                begin: (i * chunk_size) as u64,
+                slice_len: chunk_size as u64,
+                len: len as u64,
+            };
+            zeta_fn(
+                vec![&mut slice_poly_d],
+                vec![&zeta_gpu, &stream],
+                Arc::new(|x| x),
+                Some(slice_info),
+            )
+            .unwrap();
+        }
+
+        ntt_fn(
+            vec![&mut poly_gpu],
+            vec![&pq_gpu, &omegas_gpu, &stream],
+            Arc::new(|x| x),
+            None,
+        )
+        .unwrap();
+
+        poly_gpu
+            .unwrap_scalar_array()
+            .gpu2cpu(&mut poly_cpu, stream.unwrap_stream());
+
+        stream.unwrap_stream().sync();
+        stream.unwrap_stream().free(ptr_data);
+        stream.unwrap_stream().free(ptr_pq);
+        stream.unwrap_stream().free(ptr_omegas);
+        stream.unwrap_stream().free(ptr_zeta);
+
+        println!("comparing results for k = {k}...");
+
+        for i in 0..(1 << extended_k) {
+            assert_eq!(poly_cpu[i], poly_rust[i]);
+        }
+
+        cpu_alloc.free(poly_cpu.values);
+        cpu_alloc.free(pq.values);
+        cpu_alloc.free(omegas.values);
+        cpu_alloc.free(zeta_cpu.values);
+    }
+}

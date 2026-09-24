@@ -1,0 +1,219 @@
+use crate::utils::{log2, log2_ceil};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct IntegralSize(pub u32);
+
+#[derive(Debug, Clone, Hash, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SmithereenSize(pub u64);
+
+impl std::fmt::Display for IntegralSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "2^{}", self.0)
+    }
+}
+
+impl IntegralSize {
+    pub fn double(self) -> Self {
+        Self(self.0 + 1)
+    }
+    pub fn half(self) -> Self {
+        Self(self.0 - 1)
+    }
+    pub fn iter_to(self, inclusive: Self) -> IntegralSizeIter {
+        IntegralSizeIter {
+            end_inclusive: inclusive.0,
+            begin_inclusive: self.0,
+        }
+    }
+}
+
+pub struct IntegralSizeIter {
+    end_inclusive: u32,
+    begin_inclusive: u32,
+}
+
+impl Iterator for IntegralSizeIter {
+    type Item = IntegralSize;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.begin_inclusive > self.end_inclusive {
+            None
+        } else {
+            self.begin_inclusive += 1;
+            Some(IntegralSize(self.begin_inclusive - 1))
+        }
+    }
+}
+
+impl DoubleEndedIterator for IntegralSizeIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.end_inclusive < self.begin_inclusive {
+            None
+        } else {
+            self.end_inclusive -= 1;
+            Some(IntegralSize(self.end_inclusive + 1))
+        }
+    }
+}
+
+impl From<IntegralSize> for SmithereenSize {
+    fn from(size: IntegralSize) -> Self {
+        Self(2u64.pow(size.0))
+    }
+}
+
+impl TryFrom<SmithereenSize> for IntegralSize {
+    type Error = ();
+    fn try_from(value: SmithereenSize) -> Result<Self, Self::Error> {
+        if let Some(l) = value.0.checked_ilog2() {
+            if 2u64.pow(l) == value.0 {
+                Ok(IntegralSize(l))
+            } else {
+                Err(())
+            }
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl From<Size> for SmithereenSize {
+    fn from(value: Size) -> Self {
+        match value {
+            Size::Integral(is) => is.into(),
+            Size::Smithereen(ss) => ss,
+        }
+    }
+}
+
+impl TryFrom<Size> for IntegralSize {
+    type Error = ();
+    fn try_from(value: Size) -> Result<Self, Self::Error> {
+        match value {
+            Size::Integral(size) => Ok(size),
+            Size::Smithereen(ss) => ss.try_into(),
+        }
+    }
+}
+
+impl IntegralSize {
+    pub fn ceiling(size: SmithereenSize) -> Self {
+        Self(log2_ceil(size.0))
+    }
+}
+
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    Integral(IntegralSize),
+    Smithereen(SmithereenSize),
+}
+
+impl std::fmt::Display for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Size::Integral(size) => write!(f, "2^{}", size.0),
+            Size::Smithereen(size) => write!(f, "{}", size.0),
+        }
+    }
+}
+impl Size {
+    pub fn new(s: u64) -> Self {
+        let ss = SmithereenSize(s);
+        if let Ok(is) = IntegralSize::try_from(ss) {
+            Self::Integral(is)
+        } else {
+            Self::Smithereen(ss)
+        }
+    }
+
+    pub fn unwrap_integral(self) -> IntegralSize {
+        match self {
+            Size::Integral(size) => size,
+            Size::Smithereen(..) => panic!("unwrap_integral on Size::Smithereen"),
+        }
+    }
+}
+
+impl From<u64> for Size {
+    fn from(size: u64) -> Self {
+        Self::new(size)
+    }
+}
+
+impl From<Size> for u64 {
+    fn from(value: Size) -> Self {
+        match value {
+            Size::Integral(is) => 2u64.pow(is.0),
+            Size::Smithereen(SmithereenSize(ss)) => ss,
+        }
+    }
+}
+
+impl From<Size> for usize {
+    fn from(value: Size) -> Self {
+        u64::from(value) as usize
+    }
+}
+
+impl From<IntegralSize> for u64 {
+    fn from(value: IntegralSize) -> Self {
+        2u64.pow(value.0)
+    }
+}
+
+impl From<IntegralSize> for usize {
+    fn from(value: IntegralSize) -> Self {
+        2usize.pow(value.0)
+    }
+}
+
+impl std::ops::Div<u64> for Size {
+    type Output = Size;
+    fn div(self, rhs: u64) -> Self::Output {
+        match self {
+            Size::Integral(IntegralSize(is)) => {
+                if let Some(log) = log2(rhs) {
+                    Self::Integral(IntegralSize(is - log))
+                } else {
+                    panic!("can only divide by power of 2")
+                }
+            }
+            Size::Smithereen(SmithereenSize(ss)) => Self::Smithereen(SmithereenSize(ss / rhs)),
+        }
+    }
+}
+
+impl std::ops::Mul<u64> for Size {
+    type Output = Size;
+    fn mul(self, rhs: u64) -> Self::Output {
+        match self {
+            Size::Integral(IntegralSize(is)) => {
+                if let Some(log) = log2(rhs) {
+                    Self::Integral(IntegralSize(is + log))
+                } else {
+                    panic!("can only multiply by power of 2")
+                }
+            }
+            Size::Smithereen(SmithereenSize(ss)) => Self::Smithereen(SmithereenSize(ss * rhs)),
+        }
+    }
+}
+
+/// Invariant: sizes are sorted in ascending order
+#[derive(Debug, Hash, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LogBlockSizes(pub(crate) Vec<IntegralSize>);
+
+impl LogBlockSizes {
+    pub fn new(sizes: Vec<IntegralSize>) -> Self {
+        // check ascending order
+        if !sizes.is_sorted() {
+            panic!("sizes must be sorted in ascending order, got {:?}", sizes);
+        }
+
+        Self(sizes)
+    }
+
+    pub fn max(&self) -> IntegralSize {
+        *self.0.last().expect("lbss is empty")
+    }
+}

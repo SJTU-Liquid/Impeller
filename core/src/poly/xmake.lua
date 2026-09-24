@@ -1,0 +1,57 @@
+option("POLY_FIELD")
+    set_default("bn254_fr") -- Default value: TEMPLATE_A.
+    set_showmenu(true) -- Show this option in `xmake f --help`.
+    set_description("Choose a field for poly") -- Set the option description.
+
+target("test_poly_basic")
+    add_files("tests/test_basic.cu")
+    add_cugencodes("native")
+    add_packages("doctest")
+    add_cuflags("--extended-lambda")
+    set_languages("c++17")
+
+target("test_poly_eval")
+    add_files("tests/test_eval.cu")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
+    add_packages("doctest")
+    set_languages("c++17")
+
+target("test_kate_division")
+    add_files("tests/test_kate.cu")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
+    add_packages("doctest")
+    set_languages("c++17")
+
+target("test_invert")
+    add_files("tests/test_invert.cu")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
+    add_packages("doctest")
+    set_languages("c++17")
+
+target("poly")
+    set_kind("shared")
+    set_targetdir(os.projectdir().."/lib")
+    add_files("src/*.cu")
+    if has_config("POLY_FIELD") then
+        add_defines("POLY_FIELD="..get_config("POLY_FIELD").."::Element")
+    end
+    add_cugencodes("native")
+    set_optimize("fastest")
+    add_cuflags("--extended-lambda")
+    set_languages("c++17")
+
+target("test_rotate")
+    add_files("tests/test_rotate.cu")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
+    add_packages("doctest")
+    set_languages("c++17")
+
+target("test_permute")
+    add_files("tests/test_permute.cu")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
+    set_languages("c++17")

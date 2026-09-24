@@ -1,0 +1,11 @@
+[package]
+name = "zkpoly_common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libloading = "0.8"
+pasta_curves = "0.5.1"
+cytoscape_visualizer = { path = "../cytoscape_visualizer" }
+serde = { version = "1.0", features = ["derive"] }
+event-listener = "5.4.0"

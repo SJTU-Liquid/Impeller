@@ -1,0 +1,66 @@
+- Compiler Frontend
+    -![x] Abstract syntax tree builder
+    - Abstract syntax tree builder
+        -![x] Implement `ast::TypeEraseable`
+        -![x] Implement and `ast::RuntimeCorrespondance`
+        -![x] Expand user functions with different numbers of arguments using macros
+    -![x] Add constants to the constant table
+    -![x] Type reconstruction
+    -![x] Convert the abstract syntax tree to the Type2 intermediate representation
+    - [ ] Allow user functions to use the memory allocator
+- Compiler Backend
+    - Type2 intermediate representation
+        -![x] Add Extend vertices
+        -![x] Remove LiteralScalar vertices
+        -![x] Add EntryId input markers to Entry vertices
+    - NTT operator
+        -![x] Precompute twiddle factors
+    - MSM operator
+        -![x] Precompute elliptic curve points
+    - Operator Fusion
+        -![x] Rule-based arithmetic fusion
+        -[ ] Convert NewPoly to scalar constants
+    - Operator Scheduling
+        -![x] Heuristic single-GPU scheduling algorithm
+        -![x] Exclude unused vertices from the schedule
+        - [ ] Account for temporary space in the scheduling algorithm
+        - [ ] Heuristic multi-GPU scheduling algorithm
+    - Object Analysis
+        - [x] Eliminate tuple and array operations from the computation graph
+        - [x] Determine polynomial rotation and slicing information
+        - [x] Use lifetime information to decide whether polynomial arithmetic can be computed in place
+    - Memory Allocation
+        - [x] Static GPU memory allocation
+        -![x] Determine each operator’s temporary space requirements
+        -![x] Support multiple temporary buffers per operator
+        -![x] Disallow slicing or rotating an already-sliced polynomial
+        -![x] Insert rotation and slice instructions
+        -![x] Require MSM input polynomials to have no rotations or slices
+        -![x] Require GPU operator input polynomials to have no slices
+        -![ ] Replace Extend with Slice and Transfer
+        - [ ] Propagate Extend upward
+    - Execution track synchronization
+        - [x] Assign operators to threads and streams and determine dependencies
+        - [x] Insert synchronization instructions
+    - FuncCall instruction generation
+        -![x] Handle output parameters
+        - [ ] Handle multiple streams for Track::CoProcess
+    - Polynomial Arithmetic
+        -![ ] Convert Type3 SingleArith addition of polynomials with different degrees into slicing and addition
+        - [x] Compile arithmetic expressions to CUDA
+        - [ ] Decide whether to slice based on polynomial degree, then determine whether to use a co-processing operator
+        - [ ] Compile and generate operator functions for sliced polynomial arithmetic
+    - Simple Arithmetic Optimizations
+        - [ ] Eliminate Rotate(0)
+        - [ ] Constant propagation
+- Runtime
+    - CPU Operators
+        -![x] Blindoperator
+        -![x] Interploteoperator
+        -![x] AssemblePolyoperator
+        -![x] Integrate the transcript
+    -![x] Load-constant instruction
+    -![x] Load-input instruction
+    -![x] Return instruction
+    - MSM operator
+        - [ ] Pass each GPU stream as an argument

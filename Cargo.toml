@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "compiler",
+    "runtime",
+    "common",
+    "memory_pool",
+    "cuda_api",
+    "core",
+    "cytoscape_visualizer",
+    "scheduler",
+    "waterfall",
+]
